@@ -426,19 +426,19 @@ async fn handle_connection(mut stream: TcpStream, config: Arc<Config>) -> anyhow
         println!("Got Value: {value:?}");
         match value {
             Ok(Value::Array(arr)) => {
-                if arr[0] == Value::BulkString("COMMAND".to_string()) {
-                    let msg = format!("{}", Value::Array(vec![]));
-                    print!("{:?}", msg);
-                    let _ = write_half.write(msg.as_bytes()).await;
-                } else if arr[0] == Value::BulkString("PING".to_string()) {
-                    let msg = format!("{}", Value::BulkString("PONG".to_string()));
-                    print!("{:?}", msg);
-                    let _ = write_half.write(msg.as_bytes()).await;
-                } else {
-                    let msg = format!("{}", Value::SimpleError("unknown command".to_string()));
-                    print!("{:?}", msg);
-                    let _ = write_half.write(msg.as_bytes()).await;
-                }
+                let response : Value = match &arr[0] {
+                    Value::BulkString(s) => {
+                        match s.to_uppercase().as_str() {
+                            "COMMAND" => Value::Array(vec![]),
+                            "PING" => Value::BulkString("PONG".to_string()),
+                            _ => Value::SimpleError("ERR unknown command".to_string()),
+                        }
+                    }
+                    _ => Value::SimpleError("ERR command name has to be BulkString".to_string())
+                };
+                let msg = format!("{}", response);
+                print!("{:?}", msg);
+                let _ = write_half.write(msg.as_bytes()).await;
             }
             Ok(v) => {
                 let msg = format!(
