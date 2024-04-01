@@ -1,4 +1,4 @@
-use std::marker::{Send, Unpin};
+use std::marker::Unpin;
 use std::ops::Drop;
 
 use bytes::{Buf, BytesMut};
@@ -51,9 +51,8 @@ where
     T: AsyncReadExt,
 {
     fn drop(&mut self) {
-        match self.initial.take() {
-            Some(initial) => self.reader.buffer = initial,
-            None => {}
+        if let Some(initial) = self.initial.take() {
+            self.reader.buffer = initial;
         }
     }
 }
@@ -68,13 +67,10 @@ where
             buffer: BytesMut::new(),
         }
     }
-    pub async fn checkpoint<'a>(&'a mut self) -> Checkpoint<'a, T> {
+    pub async fn checkpoint(&mut self) -> Checkpoint<T> {
         Checkpoint::new(self)
     }
     async fn fill_buf(&mut self) -> bool {
-        if !self.buffer.has_remaining() {
-            self.buffer.clear();
-        }
         match self.stream.read_buf(&mut self.buffer).await {
             Ok(0) => false,
             Ok(_) => true,
@@ -116,7 +112,8 @@ where
             let to_copy = std::cmp::min(available, n - copied_bytes);
 
             let slice = &self.buffer[0..to_copy];
-            bytes.copy_from_slice(slice);
+            bytes.extend_from_slice(slice);
+            self.buffer.advance(to_copy);
             copied_bytes += to_copy;
 
             if copied_bytes == n {

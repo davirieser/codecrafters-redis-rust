@@ -5,8 +5,6 @@ use std::future::Future;
 
 use tokio::io::AsyncReadExt;
 
-use anyhow::anyhow;
-
 use thiserror::Error;
 
 use crate::{AsyncReader, RespValue, RespDataType};
@@ -21,8 +19,12 @@ pub enum RespReaderError {
     MissingNewline,
     #[error("non utf8 string")]
     NonUtf8String,
-    #[error("unknown data type {0}")]
+    #[error("unknown data type: {0}")]
     UnknownDataType(char),
+    #[error("length overflowed")]
+    LengthOverflowed,
+    #[error("invalid char in length: {0}")]
+    InvalidCharInLength(char),
     #[error("aggregate Errors")]
     Aggregate { errors: Vec<RespReaderError> },
 }
@@ -70,35 +72,33 @@ where
     /// let reader = new RespReader("123");
     /// assert!(reader.parse_length().is_err());
     /// ```
-    async fn parse_length(&mut self) -> anyhow::Result<usize> {
+    async fn parse_length(&mut self) -> Result<usize, RespReaderError> {
         // NOTE: https://redis.io/docs/reference/protocol-spec/#high-performance-parser-for-the-redis-protocol
-
         let mut len = 0;
-        let length_overflow_error = || anyhow!("Length Overflowed!");
 
         loop {
             match self.buffer.next().await {
                 Some(b'\r') => break,
                 Some(b @ b'0'..=b'9') => {
-                    let shifted = usize::checked_mul(len, 10).ok_or_else(length_overflow_error)?;
+                    let shifted = usize::checked_mul(len, 10).ok_or(RespReaderError::LengthOverflowed)?;
                     let digit = usize::from(b - b'0');
-                    len = usize::checked_add(shifted, digit).ok_or_else(length_overflow_error)?
+                    len = usize::checked_add(shifted, digit).ok_or(RespReaderError::LengthOverflowed)?
                 }
-                Some(b) => return Err(anyhow!("Invalid character in length: {}", char::from(b))),
-                _ => return Err(anyhow!("Stream ended while reading length!")),
+                Some(b) => return Err(RespReaderError::InvalidCharInLength(char::from(b))),
+                _ => return Err(RespReaderError::BufferFinished),
             }
         }
 
         if Some(b'\n') == self.buffer.next().await {
             Ok(len)
         } else {
-            Err(anyhow!("Missing newline after length!"))
+            Err(RespReaderError::MissingNewline)
         }
     }
-    fn next_boxed(&mut self) -> Pin<Box<dyn Future<Output = anyhow::Result<RespValue>> + Send + '_>> {
+    fn next_boxed(&mut self) -> Pin<Box<dyn Future<Output = Result<RespValue, RespReaderError>> + Send + '_>> {
         Box::pin(async move { self.next().await })
     }
-    pub async fn next(&mut self) -> anyhow::Result<RespValue> {
+    pub async fn next(&mut self) -> Result<RespValue, RespReaderError> {
         let first_byte = self
             .buffer
             .next()
@@ -127,7 +127,8 @@ where
                         if !self.buffer.assert_newline().await {
                             Err(RespReaderError::MissingNewline)?
                         } else {
-                            Ok(RespValue::BulkString(String::from_utf8(bytes)?))
+                            let string = String::from_utf8(bytes).map_err(|_| RespReaderError::NonUtf8String)?;
+                            Ok(RespValue::BulkString(string))
                         }
                     }
                     None => Err(RespReaderError::BufferFinished)?,
@@ -137,7 +138,9 @@ where
                 let num_elements = self.parse_length().await?;
                 let mut values = Vec::with_capacity(num_elements);
 
-                for _ in (0..num_elements) {
+                println!("Parsing Array: {}", num_elements);
+
+                for _ in 0..num_elements {
                     values.push(self.next_boxed().await?);
                 }
 
