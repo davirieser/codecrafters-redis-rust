@@ -1,6 +1,5 @@
-
-use std::time::Instant;
 use std::collections::{HashMap, HashSet};
+use std::time::Instant;
 
 pub enum DatabaseValue {
     Null,
@@ -25,4 +24,3 @@ pub enum DatabaseSlot {
 pub struct Database {
     values: HashMap<String, DatabaseSlot>,
 }
-

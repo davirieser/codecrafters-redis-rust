@@ -27,10 +27,7 @@ where
 {
     pub fn new(reader: &'a mut AsyncReader<T>) -> Self {
         let initial = Some(reader.buffer.clone());
-        Self {
-            reader,
-            initial,
-        }
+        Self { reader, initial }
     }
     pub async fn next(&mut self) -> Option<u8> {
         self.reader.next().await
@@ -125,4 +122,3 @@ where
         }
     }
 }
-

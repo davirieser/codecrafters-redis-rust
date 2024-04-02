@@ -1,9 +1,9 @@
 #![allow(unused)]
 #![warn(unused_must_use)]
 
-use std::sync::Arc;
+use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
-use std::collections::{HashSet, HashMap};
+use std::sync::Arc;
 
 use anyhow::anyhow;
 
@@ -12,10 +12,7 @@ use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 
-use nom::{
-    IResult,
-    bytes::streaming::*
-};
+use nom::{bytes::streaming::*, IResult};
 
 mod config;
 use config::Config;
@@ -24,12 +21,10 @@ mod types;
 use types::AsyncReader;
 
 mod resp;
-use resp::{RespDataType, RespReader, RespValue, RespReaderError, RespWriter};
+use resp::{RespDataType, RespReader, RespReaderError, RespValue, RespWriter};
 
 mod db;
-use db::{Database};
-
-type CommandHandler = Pin<Box<dyn Fn(Vec<RespValue>, Database) -> RespValue>>;
+use db::Database;
 
 pub enum CommandArgument {
     String(String),
@@ -66,7 +61,7 @@ pub enum CommandParseError {
     TooManyArguments,
 }
 
-impl TryFrom<Vec<RespValue>> for Command {
+impl TryFrom<Vec<RespValue<'_>>> for Command {
     type Error = CommandParseError;
 
     fn try_from(values: Vec<RespValue>) -> Result<Self, Self::Error> {
@@ -75,14 +70,16 @@ impl TryFrom<Vec<RespValue>> for Command {
             return Err(CommandParseError::EmptyCommandName);
         }
         match &values[0] {
-            RespValue::BulkString(cmd) if cmd.as_str().eq_ignore_ascii_case("PING") => {
+            RespValue::BulkString(cmd) if cmd.eq_ignore_ascii_case("PING") => {
                 if values.len() > 2 {
                     return Err(CommandParseError::TooManyArguments);
                 }
                 match values.get(1) {
                     None => Ok(Command::Ping(None)),
-                    Some(RespValue::BulkString(string)) => Ok(Command::Ping(Some(string.to_string()))),
-                    Some(_) => Err(CommandParseError::WrongArgType)
+                    Some(RespValue::BulkString(string)) => {
+                        Ok(Command::Ping(Some(string.to_string())))
+                    }
+                    Some(_) => Err(CommandParseError::WrongArgType),
                 }
             }
             _ => todo!(),
@@ -90,7 +87,11 @@ impl TryFrom<Vec<RespValue>> for Command {
     }
 }
 
-async fn handle_connection(mut stream: TcpStream, config: Arc<Config>, commands: Vec<Command>) -> anyhow::Result<()> {
+async fn handle_connection(
+    mut stream: TcpStream,
+    config: Arc<Config>,
+    commands: Vec<Command>,
+) -> anyhow::Result<()> {
     // NOTE: Wait for the Stream to be readable and writable
     let (readable, writable) = tokio::join!(stream.readable(), stream.writable());
     if readable.is_err() || writable.is_err() {
@@ -113,7 +114,7 @@ async fn handle_connection(mut stream: TcpStream, config: Arc<Config>, commands:
                     .collect::<Vec<RespDataType>>();
             }
             Ok(value) => {
-                let error = RespValue::SimpleError("ERR command has to be Array".to_string());
+                let error = RespValue::SimpleError("ERR command has to be Array".into());
                 let _ = resp_writer.write(error).await;
                 break;
             }
@@ -122,7 +123,7 @@ async fn handle_connection(mut stream: TcpStream, config: Arc<Config>, commands:
                 break;
             }
             Err(e) => {
-                let error = RespValue::SimpleError(format!("ERR {e}"));
+                let error = RespValue::SimpleError(e.to_string().into());
                 let _ = resp_writer.write(error).await;
                 break;
             }
@@ -140,7 +141,7 @@ async fn main() -> anyhow::Result<()> {
     let mut jhs = vec![];
     loop {
         // TODO: Add Graceful shutdown
-        
+
         let (stream, addr) = listener.accept().await?;
 
         println!("New Connection from {}", addr);
@@ -160,4 +161,3 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
-

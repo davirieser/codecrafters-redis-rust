@@ -1,27 +1,28 @@
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use crate::RespDataType;
 
 #[derive(Debug)]
-pub enum RespValue {
+pub enum RespValue<'a> {
     Null,
     Boolean(bool),
     Integer(i64),
     Double(f64),
-    BigNumber(i128),
-    SimpleString(String),
-    BulkString(String),
-    VerbatimString(([u8; 3], String)),
-    SimpleError(String),
-    BulkError(String),
-    Array(Vec<RespValue>),
-    Map(HashMap<RespValue, RespValue>),
-    Set(HashSet<RespValue>),
-    Push(Vec<RespValue>),
+    BigNumber(Cow<'a, str>), 
+    SimpleString(Cow<'a, str>),
+    BulkString(Cow<'a, str>),
+    VerbatimString((Cow<'a, str>, Cow<'a, str>)),
+    SimpleError(Cow<'a, str>),
+    BulkError(Cow<'a, str>),
+    Array(Vec<RespValue<'a>>),
+    Map(HashMap<RespValue<'a>, RespValue<'a>>),
+    Set(HashSet<RespValue<'a>>),
+    Push(Vec<RespValue<'a>>),
 }
 
-impl From<&RespValue> for RespDataType {
-    fn from(v: &RespValue) -> Self {
+impl<'a> From<&RespValue<'a>> for RespDataType {
+    fn from(v: &RespValue<'a>) -> Self {
         match v {
             RespValue::Null => RespDataType::Null,
             RespValue::Boolean(_) => RespDataType::Boolean,
@@ -41,8 +42,10 @@ impl From<&RespValue> for RespDataType {
     }
 }
 
-impl PartialEq for RespValue {
-    fn eq(&self, other: &RespValue) -> bool {
+impl<'a> Eq for RespValue<'a> {}
+
+impl<'a> PartialEq for RespValue<'a> {
+    fn eq(&self, other: &RespValue<'a>) -> bool {
         match (self, other) {
             (RespValue::Null, RespValue::Null) => true,
             (RespValue::Boolean(b1), RespValue::Boolean(b2)) => b1 == b2,
@@ -66,7 +69,29 @@ impl PartialEq for RespValue {
     }
 }
 
-impl std::fmt::Display for RespValue {
+impl<'a> std::hash::Hash for RespValue<'a> {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        match self {
+            RespValue::Boolean(b) => b.hash(state),
+            RespValue::Integer(i) => i.hash(state),
+            RespValue::Double(d) => d.to_bits().hash(state),
+            RespValue::BigNumber(n) => n.hash(state),
+            RespValue::SimpleString(s) => s.hash(state),
+            RespValue::BulkString(s) => s.hash(state),
+            RespValue::VerbatimString(s) => s.hash(state),
+            RespValue::SimpleError(e) => e.hash(state),
+            RespValue::BulkError(e) => e.hash(state),
+            RespValue::Array(vec) => Self::hash_slice(vec, state),
+            // TODO: Implement Set and Map Equals
+            _ => {}
+        }
+    }
+}
+
+impl<'a> std::fmt::Display for RespValue<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let first_byte = char::from(RespDataType::from(self));
         match self {
@@ -78,15 +103,14 @@ impl std::fmt::Display for RespValue {
             RespValue::Integer(i) => write!(f, "{first_byte}{i}\r\n"),
             RespValue::Double(d) => write!(f, "{first_byte}{d:?}\r\n"),
             RespValue::BigNumber(i) => write!(f, "{first_byte}{i}\r\n"),
-            RespValue::SimpleString(s) | RespValue::SimpleError(s) => write!(f, "{first_byte}{s}\r\n"),
+            RespValue::SimpleString(s) | RespValue::SimpleError(s) => {
+                write!(f, "{first_byte}{s}\r\n")
+            }
             RespValue::BulkString(s) | RespValue::BulkError(s) => {
                 write!(f, "{first_byte}{}\r\n{s}\r\n", s.len())
             }
-            // TODO: Will Encoding be rendered correctly here?
             RespValue::VerbatimString((enc, s)) => {
-                write!(f, "{first_byte}{}\r\n{}:{s}\r\n", 3 + 1 + s.len(), unsafe {
-                    std::str::from_utf8_unchecked(enc)
-                })
+                write!(f, "{first_byte}{}\r\n{}:{s}\r\n", 3 + 1 + s.len(), enc)
             }
             RespValue::Array(arr) | RespValue::Push(arr) => {
                 write!(f, "{first_byte}{}\r\n", arr.len())?;

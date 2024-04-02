@@ -1,13 +1,13 @@
 use std::boxed::Box;
+use std::future::Future;
 use std::marker::{Send, Unpin};
 use std::pin::Pin;
-use std::future::Future;
 
 use tokio::io::AsyncReadExt;
 
 use thiserror::Error;
 
-use crate::{AsyncReader, RespValue, RespDataType};
+use crate::{AsyncReader, RespDataType, RespValue};
 
 #[derive(Error, Debug, PartialEq)]
 pub enum RespReaderError {
@@ -58,20 +58,6 @@ where
     ///
     /// # Examples
     ///
-    /// ```
-    /// let reader = new RespReader("123\r\n");
-    /// assert_eq!(reader.parse_length(), Ok(123));
-    /// ```
-    ///
-    /// ```
-    /// let reader = new RespReader("123\r");
-    /// assert!(reader.parse_length().is_err());
-    /// ```
-    ///
-    /// ```
-    /// let reader = new RespReader("123");
-    /// assert!(reader.parse_length().is_err());
-    /// ```
     async fn parse_length(&mut self) -> Result<usize, RespReaderError> {
         // NOTE: https://redis.io/docs/reference/protocol-spec/#high-performance-parser-for-the-redis-protocol
         let mut len = 0;
@@ -80,9 +66,11 @@ where
             match self.buffer.next().await {
                 Some(b'\r') => break,
                 Some(b @ b'0'..=b'9') => {
-                    let shifted = usize::checked_mul(len, 10).ok_or(RespReaderError::LengthOverflowed)?;
+                    let shifted =
+                        usize::checked_mul(len, 10).ok_or(RespReaderError::LengthOverflowed)?;
                     let digit = usize::from(b - b'0');
-                    len = usize::checked_add(shifted, digit).ok_or(RespReaderError::LengthOverflowed)?
+                    len = usize::checked_add(shifted, digit)
+                        .ok_or(RespReaderError::LengthOverflowed)?
                 }
                 Some(b) => return Err(RespReaderError::InvalidCharInLength(char::from(b))),
                 _ => return Err(RespReaderError::BufferFinished),
@@ -95,7 +83,9 @@ where
             Err(RespReaderError::MissingNewline)
         }
     }
-    fn next_boxed(&mut self) -> Pin<Box<dyn Future<Output = Result<RespValue, RespReaderError>> + Send + '_>> {
+    fn next_boxed(
+        &mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<RespValue, RespReaderError>> + Send + '_>> {
         Box::pin(async move { self.next().await })
     }
     pub async fn next(&mut self) -> Result<RespValue, RespReaderError> {
@@ -115,7 +105,7 @@ where
             }
             Ok(RespDataType::SimpleString) => match self.buffer.next_line().await {
                 Some(s) => match String::from_utf8(s) {
-                    Ok(string) => Ok(RespValue::SimpleString(string)),
+                    Ok(string) => Ok(RespValue::SimpleString(string.into())),
                     Err(_) => Err(RespReaderError::NonUtf8String)?,
                 },
                 None => Err(RespReaderError::MissingNewline)?,
@@ -127,8 +117,9 @@ where
                         if !self.buffer.assert_newline().await {
                             Err(RespReaderError::MissingNewline)?
                         } else {
-                            let string = String::from_utf8(bytes).map_err(|_| RespReaderError::NonUtf8String)?;
-                            Ok(RespValue::BulkString(string))
+                            let string = String::from_utf8(bytes)
+                                .map_err(|_| RespReaderError::NonUtf8String)?;
+                            Ok(RespValue::BulkString(string.into()))
                         }
                     }
                     None => Err(RespReaderError::BufferFinished)?,
@@ -136,8 +127,9 @@ where
             }
             Ok(RespDataType::Array) => {
                 let num_elements = self.parse_length().await?;
-                let mut values = Vec::with_capacity(num_elements);
+                //let mut values = Vec::with_capacity(num_elements);
 
+                /*
                 println!("Parsing Array: {}", num_elements);
 
                 for _ in 0..num_elements {
@@ -145,6 +137,8 @@ where
                 }
 
                 Ok(RespValue::Array(values))
+                */
+                Ok(RespValue::Array(vec![]))
             }
             Ok(_) => {
                 let _ = self.buffer.next_line().await;
@@ -157,4 +151,3 @@ where
         }
     }
 }
-
