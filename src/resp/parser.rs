@@ -14,7 +14,7 @@ use nom::{
 };
 
 // https://edgarluque.com/blog/bencode-parser-with-nom/
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, PartialEq, thiserror::Error)]
 pub enum ParseError<I> {
     // When there is an error parsing a utf-8 string.
     #[error("parse utf-8 error: {0:?}")]
@@ -27,7 +27,16 @@ pub enum ParseError<I> {
     ParseFloat(#[from] std::num::ParseFloatError),
     // Errors from the combinators itself.
     #[error("nom parsing error: {0:?}")]
-    Nom(#[from] nom::error::Error<I>),
+    Nom(#[from] nom::Err<nom::error::Error<I>>),
+}
+
+impl<I> ParseError<I> {
+    pub fn incomplete(&self) -> bool {
+        match self {
+            ParseError::Nom(e) => e.is_incomplete(),
+            _ => false,
+        }
+    }
 }
 
 impl<I> From<ParseError<I>> for nom::Err<ParseError<I>> {
@@ -44,14 +53,14 @@ impl<I> From<nom::Err<ParseError<I>>> for ParseError<I> {
 
 impl<I> nom::error::ParseError<I> for ParseError<I> {
     fn from_error_kind(input: I, kind: nom::error::ErrorKind) -> Self {
-        Self::Nom(nom::error::Error { input, code: kind })
+        Self::Nom(nom::Err::Error(nom::error::Error { input, code: kind }))
     }
     fn append(_: I, _: nom::error::ErrorKind, other: Self) -> Self {
         other
     }
 }
 
-type ParseResult<'a, I, O> = IResult<I, O, ParseError<I>>;
+type ParseResult<I, O> = IResult<I, O, ParseError<I>>;
 
 fn line(input: &[u8]) -> ParseResult<&[u8], &[u8]> {
     terminated(is_not("\r\n"), crlf)(input)
@@ -115,7 +124,10 @@ fn parse_verbatim_string(input: &[u8]) -> ParseResult<&[u8], RespValue> {
     let enc = std::str::from_utf8(bytes_enc).map_err(ParseError::from)?;
     let string = std::str::from_utf8(bytes_string).map_err(ParseError::from)?;
 
-    Ok((input, RespValue::VerbatimString((enc.into(), string.into()))))
+    Ok((
+        input,
+        RespValue::VerbatimString((enc.into(), string.into())),
+    ))
 }
 
 fn parse_integer(input: &[u8]) -> ParseResult<&[u8], RespValue> {
@@ -238,7 +250,7 @@ fn parse_map(input: &[u8]) -> ParseResult<&[u8], RespValue> {
     Ok((input, RespValue::Map(map)))
 }
 
-pub fn parse_resp_value(input: &[u8]) -> ParseResult<&[u8], RespValue> {
+pub fn parse_resp_value<'b, 'a: 'b>(input: &'a [u8]) -> ParseResult<&'b [u8], RespValue<'a>> {
     let (input, first_byte) = one_of("+-:$*_#,(!=%~>")(input)?;
     match first_byte {
         '_' => parse_null(input),

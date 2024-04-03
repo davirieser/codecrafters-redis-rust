@@ -9,7 +9,7 @@ pub enum RespValue<'a> {
     Boolean(bool),
     Integer(i64),
     Double(f64),
-    BigNumber(Cow<'a, str>), 
+    BigNumber(Cow<'a, str>),
     SimpleString(Cow<'a, str>),
     BulkString(Cow<'a, str>),
     VerbatimString((Cow<'a, str>, Cow<'a, str>)),
@@ -136,4 +136,3 @@ impl<'a> std::fmt::Display for RespValue<'a> {
         }
     }
 }
-

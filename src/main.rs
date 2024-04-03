@@ -5,11 +5,13 @@ use std::collections::{HashMap, HashSet};
 use std::pin::Pin;
 use std::sync::Arc;
 
+use bytes::BytesMut;
+
 use anyhow::anyhow;
 
 use thiserror::Error;
 
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, AsyncReadExt};
 use tokio::net::{TcpListener, TcpStream};
 
 use nom::{bytes::streaming::*, IResult};
@@ -22,24 +24,10 @@ use types::AsyncReader;
 
 mod resp;
 use resp::{RespDataType, RespReader, RespReaderError, RespValue, RespWriter};
+use crate::resp::{parse_resp_value, ParseError};
 
 mod db;
 use db::Database;
-
-pub enum CommandArgument {
-    String(String),
-    Integer(i64),
-    Double(f64),
-    List(Vec<CommandArgument>),
-    Set(HashSet<CommandArgument>),
-    Map(HashMap<String, CommandArgument>),
-}
-
-pub enum CommandArgumentType {
-    Required(CommandArgument),
-    Optional(CommandArgument),
-    Multiple(String, Vec<CommandArgument>),
-}
 
 pub enum Command {
     Command,
@@ -98,36 +86,53 @@ async fn handle_connection(
         return Err(anyhow!("ERROR: Stream could not be opened!"));
     }
 
-    let (read_half, write_half) = stream.split();
-    let mut reader = AsyncReader::new(read_half);
-    let mut resp_reader = RespReader::new(reader);
-    let mut resp_writer = RespWriter::new(write_half);
+    let (mut read_half, mut write_half) = stream.split();
+    let mut buffer = BytesMut::new();
 
     loop {
-        let value = resp_reader.next().await;
-        println!("Got value: {value:?}");
-        match value {
-            Ok(RespValue::Array(arr)) => {
-                let arg_types = &arr[1..]
-                    .iter()
-                    .map(RespDataType::from)
-                    .collect::<Vec<RespDataType>>();
-            }
-            Ok(value) => {
-                let error = RespValue::SimpleError("ERR command has to be Array".into());
-                let _ = resp_writer.write(error).await;
-                break;
-            }
-            Err(RespReaderError::BufferFinished) => {
-                println!("Connection closed");
-                break;
-            }
-            Err(e) => {
-                let error = RespValue::SimpleError(e.to_string().into());
-                let _ = resp_writer.write(error).await;
-                break;
-            }
+        match read_half.read_buf(&mut buffer).await {
+            Ok(_) => {}
+            _ => break,
         }
+        let mut input = buffer.as_ref();
+        loop {
+            if input.len() == 0 { break; }
+            let value;
+            (input, value) = match parse_resp_value(input) {
+                Ok(x) => x,
+                Err(nom::Err::Error(ParseError::Nom(nom::Err::Incomplete(_)))) => break,
+                Err(nom::Err::Failure(ParseError::Nom(nom::Err::Incomplete(_)))) => break,
+                Err(e) => return Err(anyhow!("{}", e)),
+            };
+            println!("Got value: {value:?}");
+
+            let response = RespValue::Array(vec![]);
+            let msg = format!("{}", response);
+            let _ = write_half.write(msg.as_bytes()).await;
+
+            /*
+            match value {
+                RespValue::Array(arr) => {
+                    // TODO
+                }
+                value => {
+                    let error = RespValue::SimpleError("ERR command has to be Array".into());
+                    // let _ = resp_writer.write(error).await;
+                    break;
+                }
+                _ => {
+                    println!("Connection closed");
+                    break;
+                }
+                Err(e) => {
+                    let error = RespValue::SimpleError(e.to_string().into());
+                    // let _ = resp_writer.write(error).await;
+                    break;
+                }
+            }
+            */
+        }
+        buffer = BytesMut::from(input);
     }
 
     Ok(())
@@ -138,7 +143,6 @@ async fn main() -> anyhow::Result<()> {
     let config = Arc::new(Config {});
     let listener = TcpListener::bind("127.0.0.1:6379").await?;
 
-    let mut jhs = vec![];
     loop {
         // TODO: Add Graceful shutdown
 
@@ -147,16 +151,10 @@ async fn main() -> anyhow::Result<()> {
         println!("New Connection from {}", addr);
 
         let config_ref = config.clone();
-        jhs.push(tokio::spawn(async move {
-            match handle_connection(stream, config_ref, vec![]).await {
-                Ok(()) => {}
-                Err(e) => eprintln!("{:?}", e),
-            }
-        }));
-    }
-
-    for jh in jhs {
-        jh.await?;
+        match handle_connection(stream, config_ref, vec![]).await {
+            Ok(()) => {}
+            Err(e) => eprintln!("Shutdown with Error: {:?}", e),
+        }
     }
 
     Ok(())
